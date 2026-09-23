@@ -74,6 +74,22 @@ class RecorderButton extends StatelessWidget {
                 SmartDialog.showToast('已复制');
               },
             ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.drive_file_move_outline),
+            title: const Text('更改输出目录'),
+            subtitle: const Text(
+              '系统盘空间不够时换到别的盘；从下次录制开始生效',
+              style: TextStyle(fontSize: 12),
+            ),
+            onTap: () async {
+              final result = await RoomRecorderController.pickRecordDir();
+              if (result == null) {
+                return; // 用户取消
+              }
+              SmartDialog.showToast(result.isEmpty ? '已更改，下次录制生效' : result);
+            },
+          ),
         ],
       ),
     );
