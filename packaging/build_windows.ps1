@@ -309,9 +309,16 @@ Assert-IsRepo $SrcRoot
 # ---------------------------------------------------------------- 3. 叠加改造
 Write-Step "叠加录制改造"
 
-foreach ($pkg in @('simple_live_core', 'simple_live_app')) {
-    $from = Join-Path $KitRoot "$pkg\lib"
-    $to = Join-Path $SrcRoot "$pkg\lib"
+# 叠加的目录对。刻意写成显式列表而不是按包名推导：改造点不只在 lib 下，
+# 还有 simple_live_app/windows（CMakeLists.txt 里要给新版 MSVC 加抑制宏）。
+$overlays = @(
+    @{ From = 'simple_live_core\lib';    To = 'simple_live_core\lib' },
+    @{ From = 'simple_live_app\lib';     To = 'simple_live_app\lib' },
+    @{ From = 'simple_live_app\windows'; To = 'simple_live_app\windows' }
+)
+foreach ($o in $overlays) {
+    $from = Join-Path $KitRoot $o.From
+    $to = Join-Path $SrcRoot $o.To
     if (-not (Test-Path $from)) { Fail "kit 缺少目录: $from" }
     if (-not (Test-Path $to)) { Fail "源码缺少目录: $to" }
     # 用 \* 通配符形式复制，语义是"合并内容"，不会把源目录名套进去
@@ -324,7 +331,8 @@ $mustExist = @(
     'simple_live_core\lib\src\recorder\recorder_options.dart',
     'simple_live_core\lib\src\recorder\recorder.dart',
     'simple_live_app\lib\modules\live_room\recorder\room_recorder.dart',
-    'simple_live_app\lib\modules\live_room\recorder\recorder_button.dart'
+    'simple_live_app\lib\modules\live_room\recorder\recorder_button.dart',
+    'simple_live_app\windows\CMakeLists.txt'
 )
 foreach ($f in $mustExist) {
     if (-not (Test-Path (Join-Path $SrcRoot $f))) { Fail "改造文件未落地: $f" }
@@ -333,7 +341,8 @@ foreach ($f in $mustExist) {
 $checks = @(
     @{ File = 'simple_live_core\lib\simple_live_core.dart';                        Pattern = 'src/recorder/recorder.dart' },
     @{ File = 'simple_live_app\lib\modules\live_room\live_room_controller.dart';   Pattern = 'RoomRecorderController' },
-    @{ File = 'simple_live_app\lib\modules\live_room\player\player_controls.dart'; Pattern = 'RecorderButton' }
+    @{ File = 'simple_live_app\lib\modules\live_room\player\player_controls.dart'; Pattern = 'RecorderButton' },
+    @{ File = 'simple_live_app\windows\CMakeLists.txt';                            Pattern = '_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS' }
 )
 foreach ($c in $checks) {
     $path = Join-Path $SrcRoot $c.File
@@ -342,7 +351,7 @@ foreach ($c in $checks) {
         Fail "$($c.File) 未包含 $($c.Pattern)，覆盖失败"
     }
 }
-Write-Ok "5 个新文件 + 3 处改动全部落地"
+Write-Ok "6 个新文件 + 3 处改动全部落地"
 
 if ($SkipBuild) {
     Write-Step "已指定 -SkipBuild，源码准备完成"
