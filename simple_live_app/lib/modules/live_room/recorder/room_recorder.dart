@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:simple_live_app/app/controller/app_settings_controller.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
@@ -151,19 +153,28 @@ class RoomRecorderController extends GetxController {
     }
   }
 
-  /// 默认录制参数：输出到应用文档目录，不按时间切分
+  /// 默认录制参数。不按时间切分，输出目录取 [effectiveRecordDir]
   static Future<RecorderOptions> _defaultOptions() async {
     return RecorderOptions(
-      outputDir: await defaultRecordDir(),
+      outputDir: await effectiveRecordDir(),
     );
   }
 
-  /// 默认录制目录
+  /// 实际使用的录制目录：用户设置过就用它，否则用平台默认目录
+  static Future<String> effectiveRecordDir() async {
+    final custom = AppSettingsController.instance.recordDir.value;
+    if (custom.trim().isNotEmpty) {
+      return custom.trim();
+    }
+    return platformDefaultRecordDir();
+  }
+
+  /// 平台默认录制目录
   ///
   /// * Android：`Android/data/<包名>/files/SimpleLiveRecords`
   ///   （应用私有外部目录，无需存储权限，可用数据线在电脑上取走）
   /// * iOS / 桌面：应用文档目录下的 `SimpleLiveRecords`
-  static Future<String> defaultRecordDir() async {
+  static Future<String> platformDefaultRecordDir() async {
     if (Platform.isAndroid) {
       try {
         final dir = await getExternalStorageDirectory();
@@ -176,6 +187,54 @@ class RoomRecorderController extends GetxController {
     }
     final dir = await getApplicationDocumentsDirectory();
     return joinPath(dir.path, 'SimpleLiveRecords');
+  }
+
+  /// 让用户选一个目录作为录制输出目录。
+  ///
+  /// 返回 null 表示用户取消；返回空字符串表示设置成功；
+  /// 返回非空字符串是错误说明（此时不会保存设置）。
+  static Future<String?> pickRecordDir() async {
+    String? picked;
+    try {
+      picked = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择录制文件保存目录',
+      );
+    } catch (e) {
+      return '打开目录选择器失败：$e';
+    }
+    if (picked == null || picked.trim().isEmpty) {
+      return null;
+    }
+    final error = await checkDirWritable(picked);
+    if (error != null) {
+      return error;
+    }
+    AppSettingsController.instance.setRecordDir(picked);
+    return '';
+  }
+
+  /// 恢复默认目录
+  static void resetRecordDir() {
+    AppSettingsController.instance.setRecordDir("");
+  }
+
+  /// 检查目录是否可写。
+  ///
+  /// 录到一半才发现目录写不进去是最糟的情况，所以选目录时先探一次：
+  /// 建目录 + 写一个小文件 + 删掉。
+  static Future<String?> checkDirWritable(String path) async {
+    try {
+      final dir = Directory(path);
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final probe = File(joinPath(path, '.simple_live_write_test'));
+      await probe.writeAsString('ok', flush: true);
+      await probe.delete();
+      return null;
+    } catch (e) {
+      return '这个目录不可写，换一个试试：\n$e';
+    }
   }
 
   /// 把字节数格式化成人类可读的字符串
