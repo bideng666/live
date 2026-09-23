@@ -150,15 +150,24 @@ jobs:
             Write-Host "Build script not found: $script" -ForegroundColor Red
             exit 1
           }
-          $scriptArgs = @(
-            '-WorkDir', "${{ runner.temp }}\dslbuild",
-            '-UseArchive',
-            '-Tag', $tag,
-            '-ArchiveUrl', "https://codeload.github.com/lostars/dart_simple_live/zip/refs/tags/$tag"
-          )
-          if ('${{ inputs.build_msix }}' -eq 'true') { $scriptArgs += '-Msix' }
 
-          Write-Host "Running: $script $($scriptArgs -join ' ')"
+          # Use a HASHTABLE for splatting named parameters, not an array.
+          # Array splatting (@('-WorkDir', $x, '-UseArchive', ...)) is designed for
+          # positional arguments and is unreliable for named ones: with this exact
+          # argument set it fails with
+          #   "A positional parameter cannot be found that accepts argument 'https://...'"
+          # Reproduced both locally and on the runner. The hashtable form binds by
+          # name and works regardless of order.
+          $scriptArgs = @{
+            WorkDir    = "${{ runner.temp }}\dslbuild"
+            UseArchive = $true
+            Tag        = $tag
+            ArchiveUrl = "https://codeload.github.com/lostars/dart_simple_live/zip/refs/tags/$tag"
+          }
+          if ('${{ inputs.build_msix }}' -eq 'true') { $scriptArgs['Msix'] = $true }
+
+          Write-Host "Running: $script"
+          Write-Host ("  args: " + (($scriptArgs.GetEnumerator() | ForEach-Object { "-$($_.Key) $($_.Value)" }) -join ' '))
           & $script @scriptArgs
 
           # The exit code must be checked explicitly, and `-ne 0` alone is not enough:
