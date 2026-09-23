@@ -332,6 +332,7 @@ $mustExist = @(
     'simple_live_core\lib\src\recorder\recorder.dart',
     'simple_live_app\lib\modules\live_room\recorder\room_recorder.dart',
     'simple_live_app\lib\modules\live_room\recorder\recorder_button.dart',
+    'simple_live_app\lib\modules\settings\record\record_settings_page.dart',
     'simple_live_app\windows\CMakeLists.txt'
 )
 foreach ($f in $mustExist) {
@@ -351,7 +352,7 @@ foreach ($c in $checks) {
         Fail "$($c.File) 未包含 $($c.Pattern)，覆盖失败"
     }
 }
-Write-Ok "6 个新文件 + 3 处改动全部落地"
+Write-Ok "7 个新文件 + 8 处改动全部落地"
 
 if ($SkipBuild) {
     Write-Step "已指定 -SkipBuild，源码准备完成"
