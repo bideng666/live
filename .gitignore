@@ -1,0 +1,14 @@
+# 打包产物
+/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# 打包脚本的工作目录（只在把 -WorkDir 指到仓库内时才会产生）
+/_buildtest/
+/work/
+/src/
+
+# ZCode 工具的工作区配置，与本项目构建无关
+.zcodeignore

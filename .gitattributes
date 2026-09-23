@@ -1,0 +1,30 @@
+# 行尾固定策略
+#
+# 这个文件是必需的，不是可选的美化：
+#   * build_windows.ps1 必须带 UTF-8 BOM —— Windows PowerShell 5.1 在没有 BOM 时
+#     会按系统 ANSI 码页读取脚本，脚本里的中文会破坏字符串解析，报出看起来像
+#     "脚本写错了"的语法错误。BOM 是文件内容，git 不会动它，但显式声明能让
+#     行尾行为在各平台上保持一致，避免再次踩到编码类问题。
+#   * build_windows.cmd 是 cmd.exe 批处理，统一成 CRLF 最稳（LF 实测也能跑，
+#     但没必要留这个不确定性）。
+#   * patches/*.patch 用 git apply 应用，对行尾敏感，必须保持 LF。
+
+* text=auto
+
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.dart  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.patch text eol=lf
+
+# 二进制文件不做任何转换
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.zip   binary

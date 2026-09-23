@@ -1,0 +1,7 @@
+--- a/simple_live_core/lib/simple_live_core.dart
++++ b/simple_live_core/lib/simple_live_core.dart
+@@ -21,3 +21,4 @@
+ export 'src/model/live_search_result.dart';
+ export 'src/model/live_anchor_item.dart';
+ export 'src/model/live_play_url.dart';
++export 'src/recorder/recorder.dart';

@@ -1,0 +1,74 @@
+--- a/simple_live_app/lib/modules/live_room/live_room_controller.dart
++++ b/simple_live_app/lib/modules/live_room/live_room_controller.dart
+@@ -19,6 +19,7 @@
+ import 'package:simple_live_app/models/db/follow_user.dart';
+ import 'package:simple_live_app/models/db/history.dart';
+ import 'package:simple_live_app/modules/live_room/player/player_controller.dart';
++import 'package:simple_live_app/modules/live_room/recorder/room_recorder.dart';
+ import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
+ import 'package:simple_live_app/services/db_service.dart';
+ import 'package:simple_live_app/services/follow_service.dart';
+@@ -43,6 +44,54 @@
+     if (site.id == "douyin") {
+       isVertical.value = true;
+     }
++    recorder = RoomRecorderController(
++      roomInfoProvider: _buildRecorderRoomInfo,
++      playUrlResolver: _resolveRecordPlayUrl,
++      liveChecker: () => site.liveSite.getLiveStatus(roomId: roomId),
++    );
++  }
++
++  /// 录制器
++  late final RoomRecorderController recorder;
++
++  /// 录制文件命名用的房间信息
++  Future<RecorderRoomInfo> _buildRecorderRoomInfo() async {
++    final info = detail.value;
++    return RecorderRoomInfo(
++      siteId: site.id,
++      roomId: roomId,
++      userName: info?.userName ?? roomId,
++      title: info?.title ?? '',
++      url: info?.url ?? '',
++    );
++  }
++
++  /// 给录制器解析一路可用的播放地址。
++  ///
++  /// 关键点：不复用 [detail] 里页面加载时缓存的那份数据 —— 抖音 CDN 地址带
++  /// `expire` 签名会过期，这里重新走一遍「房间详情 → 清晰度 → 播放地址」，
++  /// 保证每次重连拿到的都是新签名的地址，长时间录制不会被过期打断。
++  /// 清晰度尽量和当前观看的一致。
++  Future<LivePlayUrl> _resolveRecordPlayUrl() async {
++    final freshDetail = await site.liveSite.getRoomDetail(roomId: roomId);
++    final freshQualities =
++        await site.liveSite.getPlayQualites(detail: freshDetail);
++    if (freshQualities.isEmpty) {
++      throw Exception("录制取流失败：没有可用清晰度");
++    }
++    var quality = freshQualities.first;
++    if (qualites.isNotEmpty &&
++        currentQuality >= 0 &&
++        currentQuality < qualites.length) {
++      final currentName = qualites[currentQuality].quality;
++      for (final item in freshQualities) {
++        if (item.quality == currentName) {
++          quality = item;
++          break;
++        }
++      }
++    }
++    return site.liveSite.getPlayUrls(detail: freshDetail, quality: quality);
+   }
+ 
+   late Rx<Site> rxSite;
+@@ -1060,6 +1109,8 @@
+     liveDanmaku.stop();
+     danmakuController = null;
+     _liveDurationTimer?.cancel(); // 页面关闭时取消定时器
++    // 离开直播间时结束录制
++    recorder.stop();
+     super.onClose();
+   }
+ }

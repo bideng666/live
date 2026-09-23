@@ -1,0 +1,176 @@
+name: build-windows
+
+# 在 GitHub 云端打包 Windows 版（含直播录制改造）。
+#
+# 原理：runner 上先取本仓库（改造 kit），再用 packaging/build_windows.ps1
+# 下载上游源码、叠加改造、编译、压包。所以本仓库只需要放 kit 本身，
+# 不需要把上游 500 多个文件一起提交。
+#
+# 用法：
+#   1. 把整个 kit 推到 GitHub（私有仓库也行）；
+#   2. 打开 Actions → build-windows → Run workflow；
+#   3. 跑完后在本次运行的 Artifacts 里下载 zip。
+#
+# 也可以推 v* 标签触发，会自动建 Release 并附上 zip。
+
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: 'Flutter 版本（默认与上游 CI 一致；项目 .fvmrc 为 3.38.3）'
+        required: false
+        default: '3.38.x'
+      upstream_tag:
+        description: '上游 dart_simple_live tag'
+        required: false
+        default: 'v1.11.4'
+      build_msix:
+        description: '额外构建 msix 安装包（会先安装 flutter_distributor）'
+        type: boolean
+        required: false
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+# 同一 ref 只保留最新一次运行，避免重复排队
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows 打包
+    runs-on: windows-latest
+    # 首次构建要下载 Flutter 引擎、编译 dart_quickjs 的原生代码，再跑 Windows 构建
+    timeout-minutes: 90
+    # 只有发布 Release 需要写权限，收在 job 级而不是工作流级
+    permissions:
+      contents: write
+
+    steps:
+      - name: 取本仓库（改造 kit）
+        uses: actions/checkout@v4
+
+      # 先自检 kit 是否完整。.gitignore 里一个不带前导斜杠的 src/ 规则就会把
+      # simple_live_core/lib/src/ 整个排除掉，导致后面报出"找不到改造 kit 目录"
+      # 这种完全不指向真实原因的错误。这里提前拦住并说明原因。
+      - name: 校验 kit 完整性
+        shell: powershell
+        run: |
+          $need = @(
+            'simple_live_core\lib\src\recorder\live_recorder.dart',
+            'simple_live_core\lib\src\recorder\recorder_options.dart',
+            'simple_live_core\lib\src\recorder\recorder.dart',
+            'simple_live_app\lib\modules\live_room\recorder\room_recorder.dart',
+            'simple_live_app\lib\modules\live_room\recorder\recorder_button.dart'
+          )
+          $missing = $need | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Host "缺少以下文件：" -ForegroundColor Red
+            $missing | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+            Write-Error ("kit 不完整。常见原因：.gitignore 里有未加前导斜杠的 src/ 规则，" +
+              "把 simple_live_core/lib/src/ 整个排除了。应写成 /src/ 。" +
+              "本地可用 git ls-files | Select-String recorder 核对。")
+            exit 1
+          }
+          Write-Host "kit 完整性校验通过（5 个新增文件都在）" -ForegroundColor Green
+
+      - name: 准备 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          # 与上游 CI 保持一致（上游用 3.38.x，即 3.38.10 / Dart 3.10.9）。
+          # 刻意不开 pub-cache：simple_live_core 的 dart_quickjs 是没有锁 ref 的
+          # git 依赖，缓存住 git checkout 会让"首次构建"和"缓存命中"拿到不同版本。
+          flutter-version: ${{ inputs.flutter_version || '3.38.x' }}
+          channel: stable
+          cache: true
+
+      - name: 安装 flutter_distributor（仅 msix 需要）
+        if: inputs.build_msix
+        shell: powershell
+        run: |
+          dart pub global activate flutter_distributor
+          # 确保 pub 全局 bin 在 PATH 里，否则后面找不到 flutter_distributor
+          $pubBin = Join-Path $env:LOCALAPPDATA 'Pub\Cache\bin'
+          if (Test-Path $pubBin) {
+            $pubBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            Write-Host "已把 $pubBin 加入 PATH"
+          }
+
+      - name: 打印环境信息
+        shell: powershell
+        run: |
+          flutter --version
+          flutter config --enable-windows-desktop
+          Write-Host "--- Visual Studio C++ 工具链（dart_quickjs 要编译原生代码，必须有）---"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $vs = & $vswhere -latest -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+            if ($vs) { Write-Host "OK: $vs" } else { Write-Host "未找到 C++ 工具链" -ForegroundColor Yellow }
+          } else {
+            Write-Host "vswhere 未找到" -ForegroundColor Yellow
+          }
+
+      - name: 打包（下载上游源码 + 叠加改造 + 编译 + 压包）
+        shell: powershell
+        # 刻意用 Windows PowerShell 5.1 而不是 pwsh：build_windows.ps1 是在 5.1 上验证过的
+        run: |
+          $tag = "${{ inputs.upstream_tag || 'v1.11.4' }}"
+          $scriptArgs = @(
+            '-WorkDir', "${{ runner.temp }}\dslbuild",
+            '-UseArchive',
+            '-Tag', $tag,
+            '-ArchiveUrl', "https://codeload.github.com/lostars/dart_simple_live/zip/refs/tags/$tag"
+          )
+          if ('${{ inputs.build_msix }}' -eq 'true') { $scriptArgs += '-Msix' }
+
+          Write-Host "调用: .\packaging\build_windows.ps1 $($scriptArgs -join ' ')"
+          & .\packaging\build_windows.ps1 @scriptArgs
+
+          # 这里必须显式判断退出码，而且不能只写 `-ne 0`：
+          #   * PowerShell 里 `& script.ps1` 遇到脚本内的 exit N，只会结束该脚本，
+          #     调用方会继续执行，进程退出码仍是 0 —— 不检查就会把失败当成功；
+          #   * 而脚本正常跑完时 $LASTEXITCODE 是 $null，$null -ne 0 为真 ——
+          #     只写 -ne 0 就会把成功当失败。
+          if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-Error "打包脚本失败，退出码 $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+      - name: 列出产物
+        shell: powershell
+        run: |
+          $dist = "${{ runner.temp }}\dslbuild\dist"
+          if (-not (Test-Path $dist)) { Write-Error "产物目录不存在: $dist"; exit 1 }
+          Get-ChildItem -Path $dist -Recurse -File |
+            Select-Object @{n='大小MB';e={[math]::Round($_.Length/1MB,1)}}, Name, FullName |
+            Format-Table -AutoSize | Out-String | Write-Host
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleLive-windows
+          # 只传 zip，中间的未压缩目录没必要占空间
+          path: ${{ runner.temp }}/dslbuild/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 发布 Release（仅在推 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = Get-ChildItem "${{ runner.temp }}\dslbuild\dist\*.zip" | Select-Object -First 1
+          if (-not $zip) { Write-Error "找不到 zip 产物"; exit 1 }
+          Write-Host "发布 $($zip.Name)"
+          # 已存在同名 Release 时改为覆盖上传附件
+          gh release create "${{ github.ref_name }}" $zip.FullName `
+            --title "${{ github.ref_name }}" --generate-notes
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release 可能已存在，改为覆盖附件"
+            gh release upload "${{ github.ref_name }}" $zip.FullName --clobber
+          }

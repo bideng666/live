@@ -1,0 +1,18 @@
+--- a/simple_live_app/lib/modules/live_room/player/player_controls.dart
++++ b/simple_live_app/lib/modules/live_room/player/player_controls.dart
+@@ -10,6 +10,7 @@
+ import 'package:simple_live_app/app/sites.dart';
+ import 'package:simple_live_app/app/utils.dart';
+ import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
++import 'package:simple_live_app/modules/live_room/recorder/recorder_button.dart';
+ import 'package:simple_live_app/modules/settings/danmu_settings_page.dart';
+ import 'package:simple_live_app/services/follow_service.dart';
+ import 'package:simple_live_app/widgets/desktop_refresh_button.dart';
+@@ -176,6 +177,7 @@
+                       size: 24,
+                     ),
+                   ),
++                  RecorderButton(recorder: controller.recorder),
+                   IconButton(
+                     onPressed: () {
+                       showFollowUser(controller);
