@@ -12,6 +12,21 @@ name: build-windows
 #   3. 跑完后在本次运行的 Artifacts 里下载 zip。
 #
 # 也可以推 v* 标签触发，会自动建 Release 并附上 zip。
+#
+# ============================================================================
+# 重要：下面所有 shell: powershell 的 run: 脚本体必须保持纯 ASCII。
+#
+# 原因：GitHub Actions 把 run: 的内容写成临时 .ps1 时**不加 UTF-8 BOM**，
+# 而 Windows PowerShell 5.1 在没有 BOM 时会按系统 ANSI 码页读取脚本。中文被
+# 误读后会破坏字符串解析，直接报出「表达式或语句中包含意外的标记」这类语法错误，
+# 步骤会在几秒内失败 —— 看起来像脚本写错了，其实是编码问题。
+#
+# 这个坑是实测踩出来的：本地用 -File 跑同一段脚本是好的，因为测试时给文件加了
+# BOM；而 runner 不加，所以只在云端复现。
+#
+# 所以：脚本体里的提示信息一律用英文。step 的 name: 和 inputs 的 description:
+# 可以放心用中文（那是 YAML 值，由 runner 的 Node 进程按 UTF-8 解析，不经 PowerShell）。
+# ============================================================================
 
 on:
   workflow_dispatch:
@@ -55,9 +70,15 @@ jobs:
       # 先自检 kit 是否完整。.gitignore 里一个不带前导斜杠的 src/ 规则就会把
       # simple_live_core/lib/src/ 整个排除掉，导致后面报出"找不到改造 kit 目录"
       # 这种完全不指向真实原因的错误。这里提前拦住并说明原因。
+      #
+      # 用 $root 拼绝对路径而不是直接 Test-Path 相对路径：后者依赖当前工作目录，
+      # 万一 CWD 不是仓库根目录，就会误报"文件缺失"，把真正的编码问题掩盖成
+      # 另一个看起来很像的问题。日志里会打印 $root，便于核对。
       - name: 校验 kit 完整性
         shell: powershell
         run: |
+          $root = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { (Get-Location).Path }
+          Write-Host "Checking kit under: $root"
           $need = @(
             'simple_live_core\lib\src\recorder\live_recorder.dart',
             'simple_live_core\lib\src\recorder\recorder_options.dart',
@@ -65,16 +86,18 @@ jobs:
             'simple_live_app\lib\modules\live_room\recorder\room_recorder.dart',
             'simple_live_app\lib\modules\live_room\recorder\recorder_button.dart'
           )
-          $missing = $need | Where-Object { -not (Test-Path $_) }
-          if ($missing) {
-            Write-Host "缺少以下文件：" -ForegroundColor Red
+          $missing = @($need | Where-Object { -not (Test-Path -LiteralPath (Join-Path $root $_)) })
+          if ($missing.Count -gt 0) {
+            Write-Host "Missing files:" -ForegroundColor Red
             $missing | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-            Write-Error ("kit 不完整。常见原因：.gitignore 里有未加前导斜杠的 src/ 规则，" +
-              "把 simple_live_core/lib/src/ 整个排除了。应写成 /src/ 。" +
-              "本地可用 git ls-files | Select-String recorder 核对。")
+            Write-Host ""
+            Write-Host "Kit is incomplete. Most likely cause: .gitignore has an" -ForegroundColor Red
+            Write-Host "unanchored 'src/' rule, which matches src/ at ANY depth and" -ForegroundColor Red
+            Write-Host "excludes all of simple_live_core/lib/src/ . It must be '/src/' ." -ForegroundColor Red
+            Write-Host "Check locally with:  git ls-files | findstr recorder   (expect 5 lines)" -ForegroundColor Red
             exit 1
           }
-          Write-Host "kit 完整性校验通过（5 个新增文件都在）" -ForegroundColor Green
+          Write-Host "Kit check passed (5 added files present)." -ForegroundColor Green
 
       - name: 准备 Flutter
         uses: subosito/flutter-action@v2
@@ -91,11 +114,12 @@ jobs:
         shell: powershell
         run: |
           dart pub global activate flutter_distributor
-          # 确保 pub 全局 bin 在 PATH 里，否则后面找不到 flutter_distributor
+          # Make sure the pub global bin dir is on PATH, otherwise the build
+          # step will not find flutter_distributor.
           $pubBin = Join-Path $env:LOCALAPPDATA 'Pub\Cache\bin'
-          if (Test-Path $pubBin) {
+          if (Test-Path -LiteralPath $pubBin) {
             $pubBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            Write-Host "已把 $pubBin 加入 PATH"
+            Write-Host "Added to PATH: $pubBin"
           }
 
       - name: 打印环境信息
@@ -103,22 +127,29 @@ jobs:
         run: |
           flutter --version
           flutter config --enable-windows-desktop
-          Write-Host "--- Visual Studio C++ 工具链（dart_quickjs 要编译原生代码，必须有）---"
+          Write-Host "--- Visual Studio C++ toolchain (required by dart_quickjs) ---"
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vswhere) {
+          if (Test-Path -LiteralPath $vswhere) {
             $vs = & $vswhere -latest -products * `
               -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
               -property installationPath
-            if ($vs) { Write-Host "OK: $vs" } else { Write-Host "未找到 C++ 工具链" -ForegroundColor Yellow }
+            if ($vs) { Write-Host "OK: $vs" } else { Write-Host "C++ toolchain NOT found" -ForegroundColor Yellow }
           } else {
-            Write-Host "vswhere 未找到" -ForegroundColor Yellow
+            Write-Host "vswhere not found" -ForegroundColor Yellow
           }
 
       - name: 打包（下载上游源码 + 叠加改造 + 编译 + 压包）
         shell: powershell
-        # 刻意用 Windows PowerShell 5.1 而不是 pwsh：build_windows.ps1 是在 5.1 上验证过的
+        # 显式指定工作目录，不依赖 runner 的默认 CWD
+        working-directory: ${{ github.workspace }}
+        # Use Windows PowerShell 5.1 rather than pwsh: build_windows.ps1 was verified on 5.1.
         run: |
           $tag = "${{ inputs.upstream_tag || 'v1.11.4' }}"
+          $script = Join-Path $env:GITHUB_WORKSPACE 'packaging\build_windows.ps1'
+          if (-not (Test-Path -LiteralPath $script)) {
+            Write-Host "Build script not found: $script" -ForegroundColor Red
+            exit 1
+          }
           $scriptArgs = @(
             '-WorkDir', "${{ runner.temp }}\dslbuild",
             '-UseArchive',
@@ -127,16 +158,18 @@ jobs:
           )
           if ('${{ inputs.build_msix }}' -eq 'true') { $scriptArgs += '-Msix' }
 
-          Write-Host "调用: .\packaging\build_windows.ps1 $($scriptArgs -join ' ')"
-          & .\packaging\build_windows.ps1 @scriptArgs
+          Write-Host "Running: $script $($scriptArgs -join ' ')"
+          & $script @scriptArgs
 
-          # 这里必须显式判断退出码，而且不能只写 `-ne 0`：
-          #   * PowerShell 里 `& script.ps1` 遇到脚本内的 exit N，只会结束该脚本，
-          #     调用方会继续执行，进程退出码仍是 0 —— 不检查就会把失败当成功；
-          #   * 而脚本正常跑完时 $LASTEXITCODE 是 $null，$null -ne 0 为真 ——
-          #     只写 -ne 0 就会把成功当失败。
+          # The exit code must be checked explicitly, and `-ne 0` alone is not enough:
+          #   * When `& script.ps1` hits an `exit N` inside the script, it only ends
+          #     that script; the caller keeps running and the process exit code stays 0.
+          #     Not checking at all means a failed build is reported as success.
+          #   * When the script finishes normally, $LASTEXITCODE is $null, and
+          #     $null -ne 0 is true. Checking only `-ne 0` means success is reported
+          #     as failure.
           if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-            Write-Error "打包脚本失败，退出码 $LASTEXITCODE"
+            Write-Host "Build script failed with exit code $LASTEXITCODE" -ForegroundColor Red
             exit $LASTEXITCODE
           }
 
@@ -144,9 +177,12 @@ jobs:
         shell: powershell
         run: |
           $dist = "${{ runner.temp }}\dslbuild\dist"
-          if (-not (Test-Path $dist)) { Write-Error "产物目录不存在: $dist"; exit 1 }
-          Get-ChildItem -Path $dist -Recurse -File |
-            Select-Object @{n='大小MB';e={[math]::Round($_.Length/1MB,1)}}, Name, FullName |
+          if (-not (Test-Path -LiteralPath $dist)) {
+            Write-Host "Output dir not found: $dist" -ForegroundColor Red
+            exit 1
+          }
+          Get-ChildItem -LiteralPath $dist -Recurse -File |
+            Select-Object @{n='SizeMB';e={[math]::Round($_.Length/1MB,1)}}, Name, FullName |
             Format-Table -AutoSize | Out-String | Write-Host
 
       - name: 上传产物
@@ -165,12 +201,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $zip = Get-ChildItem "${{ runner.temp }}\dslbuild\dist\*.zip" | Select-Object -First 1
-          if (-not $zip) { Write-Error "找不到 zip 产物"; exit 1 }
-          Write-Host "发布 $($zip.Name)"
-          # 已存在同名 Release 时改为覆盖上传附件
+          if (-not $zip) {
+            Write-Host "No zip artifact found" -ForegroundColor Red
+            exit 1
+          }
+          Write-Host "Releasing $($zip.Name)"
+          # If a Release with the same tag already exists, upload the asset instead.
           gh release create "${{ github.ref_name }}" $zip.FullName `
             --title "${{ github.ref_name }}" --generate-notes
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "Release 可能已存在，改为覆盖附件"
+            Write-Host "Release may already exist, uploading asset instead"
             gh release upload "${{ github.ref_name }}" $zip.FullName --clobber
           }
